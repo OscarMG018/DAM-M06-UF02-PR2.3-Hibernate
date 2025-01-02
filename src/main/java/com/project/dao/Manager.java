@@ -9,6 +9,7 @@ import java.util.List;
 import java.util.Properties;
 import java.util.Set;
 
+import org.hibernate.Hibernate;
 import org.hibernate.HibernateException;
 import org.hibernate.Session;
 import org.hibernate.SessionFactory;
@@ -90,6 +91,233 @@ public class Manager {
     public static void close() {
         if (factory != null) {
             factory.close();
+        }
+    }
+
+    // Mètodes genèrics CRUD
+    public static <T> T save(T entity) {
+        Session session = factory.openSession();
+        Transaction tx = null;
+        try {
+            tx = session.beginTransaction();
+            session.persist(entity);
+            tx.commit();
+            return entity;
+        } catch (HibernateException e) {
+            if (tx != null) tx.rollback();
+            throw e;
+        } finally {
+            session.close();
+        }
+    }
+
+    public static <T> T update(T entity) {
+        Session session = factory.openSession();
+        Transaction tx = null;
+        try {
+            tx = session.beginTransaction();
+            session.merge(entity);
+            tx.commit();
+            return entity;
+        } catch (HibernateException e) {
+            if (tx != null) tx.rollback();
+            throw e;
+        } finally {
+            session.close();
+        }
+    }
+
+    public static <T> void delete(T entity) {
+        Session session = factory.openSession();
+        Transaction tx = null;
+        try {
+            tx = session.beginTransaction();
+            session.remove(entity);
+            tx.commit();
+        } catch (HibernateException e) {
+            if (tx != null) tx.rollback();
+            throw e;
+        } finally {
+            session.close();
+        }
+    }
+
+    public static <T> T get(Class<T> clazz, Serializable id) {
+        Session session = factory.openSession();
+        try {
+            return session.get(clazz, id);
+        } finally {
+            session.close();
+        }
+    }
+
+    // Mètodes específics per a la gestió de la biblioteca
+    public static List<Biblioteca> getAllBiblioteques() {
+        Session session = factory.openSession();
+        try {
+            return session.createQuery("from Biblioteca", Biblioteca.class).list();
+        } finally {
+            session.close();
+        }
+    }
+
+    public static List<Llibre> getAllLlibres() {
+        Session session = factory.openSession();
+        try {
+            return session.createQuery("from Llibre", Llibre.class).list();
+        } finally {
+            session.close();
+        }
+    }
+
+    public static List<Persona> getAllPersones() {
+        Session session = factory.openSession();
+        try {
+            return session.createQuery("from Persona", Persona.class).list();
+        } finally {
+            session.close();
+        }
+    }
+
+    public static List<Autor> getAllAutors() {
+        Session session = factory.openSession();
+        try {
+            return session.createQuery("from Autor", Autor.class).list();
+        } finally {
+            session.close();
+        }
+    }
+
+    public static List<Prestec> getPrestecsActius() {
+        Session session = factory.openSession();
+        try {
+            return session.createQuery("from Prestec p where p.actiu = true", Prestec.class).list();
+        } finally {
+            session.close();
+        }
+    }
+
+    public static List<Prestec> getPrestecsRetardats() {
+        Session session = factory.openSession();
+        try {
+            LocalDate avui = LocalDate.now();
+            return session.createQuery(
+                "from Prestec p where p.actiu = true and p.dataRetornPrevista < :avui", 
+                Prestec.class)
+                .setParameter("avui", avui)
+                .list();
+        } finally {
+            session.close();
+        }
+    }
+
+    public static List<Exemplar> getExemplarsDisponibles() {
+        Session session = factory.openSession();
+        try {
+            List<Exemplar> exemplars = session.createQuery("from Exemplar e where e.disponible = true", Exemplar.class).list();
+            exemplars.forEach(exemplar -> Hibernate.initialize(exemplar.getHistorialPrestecs()));
+            return exemplars;
+        } finally {
+            session.close();
+        }
+    }
+
+    public static Prestec ferPrestec(Exemplar exemplar, Persona persona, LocalDate dataPrestec, LocalDate dataRetornPrevista) {
+        if (!exemplar.isDisponible()) {
+            throw new IllegalStateException("L'exemplar no està disponible");
+        }
+
+        Prestec prestec = new Prestec(exemplar, persona, dataPrestec, dataRetornPrevista);
+        exemplar.addPrestec(prestec);
+        persona.addPrestec(prestec);
+
+        Session session = factory.openSession();
+        Transaction tx = null;
+        try {
+            tx = session.beginTransaction();
+            session.persist(prestec);
+            session.merge(exemplar);
+            session.merge(persona);
+            tx.commit();
+            return prestec;
+        } catch (HibernateException e) {
+            if (tx != null) tx.rollback();
+            throw e;
+        } finally {
+            session.close();
+        }
+    }
+
+    public static void retornarPrestec(Prestec prestec, LocalDate dataRetornReal) {
+        if (!prestec.isActiu()) {
+            throw new IllegalStateException("El préstec ja ha estat retornat");
+        }
+
+        prestec.setDataRetornReal(dataRetornReal);
+        prestec.setActiu(false);
+        prestec.getExemplar().setDisponible(true);
+
+        Session session = factory.openSession();
+        Transaction tx = null;
+        try {
+            tx = session.beginTransaction();
+            session.merge(prestec);
+            session.merge(prestec.getExemplar());
+            tx.commit();
+        } catch (HibernateException e) {
+            if (tx != null) tx.rollback();
+            throw e;
+        } finally {
+            session.close();
+        }
+    }
+
+    public static List<Llibre> cercarLlibrePerTitol(String titol) {
+        Session session = factory.openSession();
+        try {
+            List<Llibre> llibres = session.createQuery(
+                "from Llibre l where lower(l.titol) like lower(:titol)", 
+                Llibre.class)
+                .setParameter("titol", "%" + titol + "%")
+                .list();
+            llibres.forEach(llibre -> {
+                Hibernate.initialize(llibre.getAutors());
+                Hibernate.initialize(llibre.getExemplars());
+            });
+            return llibres;
+        } finally {
+            session.close();
+        }
+    }
+
+    public static List<Llibre> cercarLlibrePerAutor(String nomAutor) {
+        Session session = factory.openSession();
+        try {
+            List<Llibre> llibres =  session.createQuery(
+                "select distinct l from Llibre l join l.autors a where lower(a.nom) like lower(:nom)", 
+                Llibre.class)
+                .setParameter("nom", "%" + nomAutor + "%")
+                .list();
+            llibres.forEach(llibre -> {
+                Hibernate.initialize(llibre.getAutors());
+                Hibernate.initialize(llibre.getExemplars());
+            });
+            return llibres;
+        } finally {
+            session.close();
+        }
+    }
+
+    public static List<Prestec> getHistorialPrestecs(Persona persona) {
+        Session session = factory.openSession();
+        try {
+            return session.createQuery(
+                "from Prestec p where p.persona = :persona order by p.dataPrestec desc", 
+                Prestec.class)
+                .setParameter("persona", persona)
+                .list();
+        } finally {
+            session.close();
         }
     }
 }
